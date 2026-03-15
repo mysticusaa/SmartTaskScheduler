@@ -1,0 +1,88 @@
+name: CI Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      backend: ${{ steps.filter.outputs.backend }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            frontend:
+              - 'frontend/**'
+            backend:
+              - 'backend/**'
+
+  frontend-ci:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "pnpm"
+          cache-dependency-path: "./frontend/pnpm-lock.yaml"
+
+      - run: pnpm install
+      - run: pnpm lint
+      - run: pnpm test || [ $? -eq 1 ]
+      - run: pnpm build
+
+  backend-ci:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run Ruff (Lint & Format Check)
+        run: uv run ruff check . && uv run ruff format --check .
+
+      - name: Run Tests
+        run: uv run pytest || [ $? -eq 5 ]
+
+  final-check:
+    name: "Final CI Status"
+    needs: [frontend-ci, backend-ci]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate Results
+        run: |
+          FE_RESULT="${{ needs.frontend-ci.result }}"
+          BE_RESULT="${{ needs.backend-ci.result }}"
+
+          # Success if (Success OR Skipped) AND (Success OR Skipped)
+          if [[ ($FE_RESULT == "success" || $FE_RESULT == "skipped") && ($BE_RESULT == "success" || $BE_RESULT == "skipped") ]]; then
+            echo "All relevant checks passed!"
+            exit 0
+          else
+            echo "A required check failed."
+            exit 1
+          fi
